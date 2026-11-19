@@ -20,7 +20,7 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install Ninja
         run: brew install ninja
@@ -89,7 +89,7 @@ jobs:
           ditto -c -k --keepParent "$ARTEFACTS/AU/Slice-able.component"     dist/Slice-able-macOS-AU.zip
           ditto -c -k --keepParent "$ARTEFACTS/Standalone/Slice-able.app"   dist/Slice-able-macOS-Standalone.zip
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: Slice-able-macOS-Universal
           path: dist/*.zip
@@ -100,7 +100,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Configure
         run: cmake -S . -B build -A x64
@@ -129,7 +129,7 @@ jobs:
           Compress-Archive -Path "$env:ARTEFACTS/VST3/Slice-able.vst3" -DestinationPath dist/Slice-able-Windows-VST3.zip
           Compress-Archive -Path "$env:ARTEFACTS/Standalone/Slice-able.exe" -DestinationPath dist/Slice-able-Windows-Standalone.zip
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: Slice-able-Windows-x64
           path: dist/*.zip
