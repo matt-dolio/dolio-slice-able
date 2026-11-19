@@ -1,0 +1,136 @@
+name: Build
+
+on:
+  push:
+    branches: [main, "dolio/**"]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PLUGINVAL_VERSION: v1.0.4
+  ARTEFACTS: build/SliceAble_artefacts/Release
+
+jobs:
+  macos:
+    name: macOS (Universal)
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ninja
+        run: brew install ninja
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0
+
+      - name: Build
+        run: cmake --build build --parallel
+
+      - name: Unit tests
+        run: ctest --test-dir build --output-on-failure
+
+      - name: Check binaries are universal (arm64 + x86_64)
+        run: |
+          set -euo pipefail
+          for bin in \
+            "$ARTEFACTS/VST3/Slice-able.vst3/Contents/MacOS/Slice-able" \
+            "$ARTEFACTS/AU/Slice-able.component/Contents/MacOS/Slice-able" \
+            "$ARTEFACTS/Standalone/Slice-able.app/Contents/MacOS/Slice-able"
+          do
+            archs="$(lipo -archs "$bin")"
+            echo "$bin: $archs"
+            if [[ "$archs" != *arm64* || "$archs" != *x86_64* ]]; then
+              echo "::error::$bin is not a universal binary"
+              exit 1
+            fi
+          done
+
+      - name: Ad-hoc code sign
+        run: |
+          set -euo pipefail
+          for bundle in VST3/Slice-able.vst3 AU/Slice-able.component Standalone/Slice-able.app; do
+            codesign --force --deep --sign - "$ARTEFACTS/$bundle"
+            codesign --verify --deep --strict "$ARTEFACTS/$bundle"
+          done
+
+      - name: Validate AU (auval)
+        run: |
+          set -euo pipefail
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R "$ARTEFACTS/AU/Slice-able.component" ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar || true
+          auval -v aumu Slcb Dlio
+
+      - name: Validate VST3 (pluginval)
+        run: |
+          set -euo pipefail
+          curl -sSL -o pluginval.zip "https://github.com/Tracktion/pluginval/releases/download/${PLUGINVAL_VERSION}/pluginval_macOS.zip"
+          unzip -q pluginval.zip -d pluginval
+          pluginval/pluginval.app/Contents/MacOS/pluginval \
+            --strictness-level 10 \
+            --validate-in-process \
+            --validate "$ARTEFACTS/VST3/Slice-able.vst3"
+
+      - name: Package
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # ditto keeps bundle permissions and symlinks intact
+          ditto -c -k --keepParent "$ARTEFACTS/VST3/Slice-able.vst3"        dist/Slice-able-macOS-VST3.zip
+          ditto -c -k --keepParent "$ARTEFACTS/AU/Slice-able.component"     dist/Slice-able-macOS-AU.zip
+          ditto -c -k --keepParent "$ARTEFACTS/Standalone/Slice-able.app"   dist/Slice-able-macOS-Standalone.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Slice-able-macOS-Universal
+          path: dist/*.zip
+          if-no-files-found: error
+
+  windows:
+    name: Windows (x64)
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -A x64
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      - name: Unit tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Validate VST3 (pluginval)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://github.com/Tracktion/pluginval/releases/download/$env:PLUGINVAL_VERSION/pluginval_Windows.zip" -OutFile pluginval.zip
+          Expand-Archive pluginval.zip -DestinationPath pluginval
+          $pvArgs = @('--strictness-level', '10', '--validate-in-process', '--output-dir', 'pluginval-logs',
+                    '--validate', "$env:ARTEFACTS/VST3/Slice-able.vst3")
+          $p = Start-Process -FilePath pluginval\pluginval.exe -ArgumentList $pvArgs -NoNewWindow -Wait -PassThru
+          Get-ChildItem pluginval-logs -ErrorAction SilentlyContinue | ForEach-Object { Get-Content $_.FullName }
+          exit $p.ExitCode
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path "$env:ARTEFACTS/VST3/Slice-able.vst3" -DestinationPath dist/Slice-able-Windows-VST3.zip
+          Compress-Archive -Path "$env:ARTEFACTS/Standalone/Slice-able.exe" -DestinationPath dist/Slice-able-Windows-Standalone.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Slice-able-Windows-x64
+          path: dist/*.zip
+          if-no-files-found: error
