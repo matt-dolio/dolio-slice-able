@@ -166,8 +166,9 @@ void SliceAbleEditor::setUpKnob (Knob& knob, const juce::String& paramId, const 
     knob.label.setJustificationType (juce::Justification::centred);
     addAndMakeVisible (knob.label);
 
-    knob.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 76, 16);
+    // Add first, so the value box is (re)created with this editor's look and feel.
     addAndMakeVisible (knob.slider);
+    knob.slider.setTextBoxStyle (juce::Slider::TextBoxBelow, false, 76, 16);
 
     knob.attachment = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
         processor.getState(), paramId, knob.slider);
@@ -229,7 +230,7 @@ void SliceAbleEditor::resized()
     area.removeFromBottom (8);
 
     // Controls
-    auto controls = area.removeFromBottom (134);
+    auto controls = area.removeFromBottom (146);
     area.removeFromBottom (6);
 
     auto info = area.removeFromBottom (20);
@@ -252,7 +253,7 @@ void SliceAbleEditor::resized()
     {
         c.label.setBounds (column.removeFromTop (16));
         c.box.setBounds (column.removeFromTop (24));
-        column.removeFromTop (6);
+        column.removeFromTop (4);
     };
 
     const auto layoutKnob = [] (Knob& k, juce::Rectangle<int> cell)

@@ -529,7 +529,7 @@ TEST (voiceStealingNeverExceedsTheVoiceLimit)
 TEST (exportWritesOneWavPerSlice)
 {
     auto sample = rampSample (4000, 1000.0, 2);
-    sample->file = juce::File ("/tmp/Drum Loop.wav");
+    sample->file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("Drum Loop.wav");
 
     SliceLayout layout;
     computeSlices (grid (60.0, "1/4"), 4000, 1000.0, layout);
@@ -570,7 +570,9 @@ TEST (loadRejectsMissingFiles)
 {
     juce::AudioFormatManager formats;
     formats.registerBasicFormats();
-    const auto result = SampleData::load (juce::File ("/definitely/not/here.wav"), formats);
+    const auto missing = juce::File::getSpecialLocation (juce::File::tempDirectory)
+                             .getChildFile ("sliceable-definitely-missing").getChildFile ("here.wav");
+    const auto result = SampleData::load (missing, formats);
     CHECK (result.sample == nullptr);
     CHECK (result.error.isNotEmpty());
 }
