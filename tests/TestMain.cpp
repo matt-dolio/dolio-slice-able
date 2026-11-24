@@ -1,5 +1,33 @@
-// Unit tests for the slicing maths, playback engine and WAV export.
-// Plain executable: returns non-zero if any check fails (run through CTest).
+// =============================================================================
+// TestMain.cpp - unit tests for the slicing maths, playback engine and WAV export.
+//
+// These test the core logic WITHOUT a DAW or a window: they call SliceGrid,
+// SliceEngine and SliceExporter directly with synthetic audio and check the
+// results. Run them after any change to those files:
+//
+//     cmake --build build --target SliceAbleTests
+//     ctest --test-dir build --output-on-failure
+//
+// It's a plain executable that returns non-zero if any check fails (which is
+// how CTest and the CI workflow know the tests failed). Failures are printed
+// with the test name and line number.
+//
+// HOW TO ADD A TEST
+//   Write a block anywhere below, inside the anonymous namespace:
+//
+//       TEST (myNewBehaviourWorks)
+//       {
+//           SliceLayout layout;
+//           computeSlices (grid (120.0, "1/8"), 48000, 48000.0, layout);
+//           CHECK_EQ (layout.numSlices, 4);
+//       }
+//
+//   TEST registers it automatically; main() runs every registered test.
+//   CHECK (condition) and CHECK_EQ (a, b) record a failure but keep going.
+//
+// Most engine tests use a sample rate of 1000 Hz so that 1 frame = 1 ms, which
+// makes the expected numbers easy to read.
+// =============================================================================
 
 #include "SliceEngine.h"
 #include "SliceExporter.h"
@@ -18,10 +46,15 @@ JUCE_BEGIN_IGNORE_WARNINGS_GCC_LIKE ("-Wfloat-equal")
 
 namespace
 {
-int failures = 0;
-int checks = 0;
-std::string currentTest;
+// ---------------------------------------------------------------------------
+// Minimal test harness (no external test framework needed)
+// ---------------------------------------------------------------------------
 
+int failures = 0;        // number of failed checks so far
+int checks = 0;          // number of checks run so far
+std::string currentTest; // name of the running test, for failure messages
+
+// Records one check; prints a message if it failed. Use the CHECK macros below.
 void check (bool condition, const std::string& what, int line)
 {
     ++checks;
@@ -33,9 +66,12 @@ void check (bool condition, const std::string& what, int line)
     }
 }
 
+// CHECK (x)       - fails if x is false; prints the expression's source text.
+// CHECK_EQ (a, b) - fails if a != b; also prints both values (numbers only).
 #define CHECK(cond) check ((cond), #cond, __LINE__)
 #define CHECK_EQ(a, b) check ((a) == (b), std::string (#a " == " #b " (got ") + std::to_string (a) + " vs " + std::to_string (b) + ")", __LINE__)
 
+// Every TEST adds itself to this list (via a static Register object) before main() runs.
 struct TestCase
 {
     std::string name;
@@ -53,11 +89,18 @@ struct Register
     Register (std::string name, std::function<void()> body) { registry().push_back ({ std::move (name), std::move (body) }); }
 };
 
+// TEST (name) { ... } declares a test function and registers it under its name.
 #define TEST(name) \
     static void name(); \
     static Register name##_registration (#name, name); \
     static void name()
 
+// ---------------------------------------------------------------------------
+// Helpers shared by the tests
+// ---------------------------------------------------------------------------
+
+// Index of a division by its menu name, e.g. "1/16" -> 12. -1 if not found.
+// Lets tests say grid (120.0, "1/16") instead of relying on table positions.
 int divisionIndex (std::string_view name)
 {
     for (size_t i = 0; i < gridDivisions.size(); ++i)
@@ -67,6 +110,7 @@ int divisionIndex (std::string_view name)
     return -1;
 }
 
+// Builds GridSettings for a tempo and division (offset in frames, default 0).
 GridSettings grid (double bpm, std::string_view division, double offset = 0.0)
 {
     GridSettings s;
@@ -77,6 +121,8 @@ GridSettings grid (double bpm, std::string_view division, double offset = 0.0)
     return s;
 }
 
+// True if the slices start at 0, follow each other with no gaps or overlaps,
+// and end at `length` (or stop early because of the 128-slice cap).
 bool contiguous (const SliceLayout& layout, int64_t length)
 {
     if (layout.numSlices == 0)
@@ -92,7 +138,9 @@ bool contiguous (const SliceLayout& layout, int64_t length)
     return layout.numUnmapped > 0 || layout.slices[(size_t) layout.numSlices - 1].end == length;
 }
 
-// A sample whose value at frame n is n / length, so we can tell exactly which frames get played.
+// A sample whose value rises steadily from 0.25 (frame 0) towards 0.75 (last frame).
+// Because every frame has a different value, a test can tell exactly which frame
+// the engine played just by looking at the output value.
 SampleData::Ptr rampSample (int length, double sampleRate, int channels = 1)
 {
     juce::AudioBuffer<float> buffer (channels, length);
@@ -104,6 +152,7 @@ SampleData::Ptr rampSample (int length, double sampleRate, int channels = 1)
     return SampleData::fromBuffer (std::move (buffer), sampleRate);
 }
 
+// A MIDI buffer holding a single note-on at `position` (frames into the block).
 juce::MidiBuffer noteOn (int note, int position = 0, float velocity = 1.0f)
 {
     juce::MidiBuffer midi;
@@ -111,13 +160,15 @@ juce::MidiBuffer noteOn (int note, int position = 0, float velocity = 1.0f)
     return midi;
 }
 
+// Loudest absolute sample value in a buffer (0 = silence).
 float peak (const juce::AudioBuffer<float>& b)
 {
     return b.getMagnitude (0, b.getNumSamples());
 }
 
 // ---------------------------------------------------------------------------
-// Grid maths
+// Grid maths (SliceGrid)
+// Most of these use 60 BPM at 1000 Hz, where one quarter note = 1000 frames.
 // ---------------------------------------------------------------------------
 
 TEST (sixteenthsAt120BpmSliceOneBarIntoSixteen)
@@ -199,6 +250,8 @@ TEST (offsetShiftsGridAndCreatesPickupSlice)
 
 TEST (offsetLargerThanStepWrapsAround)
 {
+    // The grid extends both ways from the offset, so offsets one or more whole
+    // steps apart (300 and 2300 with a 1000-frame step) give the same slices.
     SliceLayout a, b;
     computeSlices (grid (60.0, "1/4", 300.0), 5000, 1000.0, a);
     computeSlices (grid (60.0, "1/4", 2300.0), 5000, 1000.0, b);
@@ -305,6 +358,7 @@ TEST (fitToBarsGivesTheLoopTempo)
 
 TEST (findSliceAtLocatesSlices)
 {
+    // 4 slices of 1000 frames; check positions on and around the boundaries.
     SliceLayout layout;
     computeSlices (grid (60.0, "1/4"), 4000, 1000.0, layout);
 
@@ -317,9 +371,12 @@ TEST (findSliceAtLocatesSlices)
 }
 
 // ---------------------------------------------------------------------------
-// Playback engine
+// Playback engine (SliceEngine)
 // ---------------------------------------------------------------------------
 
+// Common setup for engine tests: a 4000-frame ramp sample at 1000 Hz, cut into
+// 4 quarter-note slices of 1000 frames each, root note C1 (36), and no attack /
+// release so output values can be compared exactly with the source.
 struct EngineFixture
 {
     SliceEngine engine;
@@ -336,6 +393,7 @@ struct EngineFixture
         params.releaseMs = 0.0f;
     }
 
+    // Runs one block of `numSamples` frames through the engine and returns the output.
     juce::AudioBuffer<float> render (const juce::MidiBuffer& midi, int numSamples)
     {
         juce::AudioBuffer<float> out (2, numSamples);
@@ -360,6 +418,7 @@ TEST (noteMapsToSliceAndPlaysItsAudio)
 
 TEST (notesOutsideTheSliceRangeAreIgnored)
 {
+    // One key below the root, and one key past the last (4th) slice.
     EngineFixture f;
     CHECK (peak (f.render (noteOn (f.root - 1), 100)) == 0.0f);
     CHECK (peak (f.render (noteOn (f.root + 4), 100)) == 0.0f);
@@ -398,6 +457,8 @@ TEST (gateModeReleasesOnNoteOff)
 
 TEST (monoModeChokesPreviousSlice)
 {
+    // A second note 100 frames later should cut the first; after the 3 ms choke
+    // fade (3 frames here) only the second voice is left.
     EngineFixture f;
     f.params.voiceMode = VoiceMode::mono;
 
@@ -412,6 +473,7 @@ TEST (monoModeChokesPreviousSlice)
 
 TEST (polyModeLayersSlices)
 {
+    // Same as above but in the default Poly mode: both slices keep playing.
     EngineFixture f;
 
     juce::MidiBuffer midi = noteOn (f.root);
@@ -423,6 +485,7 @@ TEST (polyModeLayersSlices)
 
 TEST (retriggeringTheSameNoteCutsTheOldInstance)
 {
+    // Even in Poly mode, hitting the same key twice doesn't stack two copies.
     EngineFixture f;
 
     juce::MidiBuffer midi = noteOn (f.root);
@@ -478,6 +541,7 @@ TEST (reversePlaysSliceBackwards)
 
 TEST (midiEventsAreSampleAccurate)
 {
+    // A note at frame 37 of the block must start exactly on frame 37.
     EngineFixture f;
     auto out = f.render (noteOn (f.root, 37), 100);
 
@@ -487,6 +551,8 @@ TEST (midiEventsAreSampleAccurate)
 
 TEST (swappingSampleSilencesVoices)
 {
+    // Loading a new sample stops everything and hands back the old sample
+    // (so the caller can free it off the audio thread).
     EngineFixture f;
     f.render (noteOn (f.root), 10);
     CHECK_EQ (f.engine.getNumActiveVoices(), 1);
@@ -499,6 +565,7 @@ TEST (swappingSampleSilencesVoices)
 
 TEST (allNotesOffFadesEverythingOut)
 {
+    // Hosts send "all notes off" on transport stop; even one-shot voices must stop.
     EngineFixture f;
     f.render (noteOn (f.root), 10);
 
@@ -511,6 +578,8 @@ TEST (allNotesOffFadesEverythingOut)
 
 TEST (voiceStealingNeverExceedsTheVoiceLimit)
 {
+    // 100 notes in one block, far more than maxVoices: old voices get stolen
+    // rather than the engine running out of voices or overrunning its array.
     EngineFixture f (200000, 48000.0);
     computeSlices (grid (120.0, "1/64"), 200000, 48000.0, f.layout);
 
@@ -523,11 +592,13 @@ TEST (voiceStealingNeverExceedsTheVoiceLimit)
 }
 
 // ---------------------------------------------------------------------------
-// Export
+// Export and loading (SliceExporter, SampleData)
 // ---------------------------------------------------------------------------
 
 TEST (exportWritesOneWavPerSlice)
 {
+    // Writes 4 stereo slices to a temporary folder, checks the file names, then
+    // reads one back to confirm its length, format and audio content.
     auto sample = rampSample (4000, 1000.0, 2);
     sample->file = juce::File::getSpecialLocation (juce::File::tempDirectory).getChildFile ("Drum Loop.wav");
 
@@ -579,6 +650,8 @@ TEST (loadRejectsMissingFiles)
 
 } // namespace
 
+// Runs every registered test in the order they appear in this file, then
+// prints a summary. Exit code 0 = all passed, 1 = at least one failure.
 int main()
 {
     for (const auto& test : registry())
