@@ -1,18 +1,38 @@
+# =============================================================================
+# build.yml - GitHub Actions: builds, tests and validates the plug-in on every push.
+#
+# Two jobs run in parallel:
+#   macos   - Universal Binary (Apple Silicon + Intel): VST3, AU and Standalone
+#   windows - x64: VST3 and Standalone
+#
+# Each job: configure -> build -> unit tests -> validate in a plug-in checker
+# -> zip -> upload. The zips appear as downloadable "artifacts" on the run's page
+# (Actions tab -> pick a run -> Artifacts).
+#
+# Validators:
+#   auval      - Apple's own Audio Unit validator (Logic uses the same checks)
+#   pluginval  - Tracktion's open-source validator; strictness 10 is its most
+#                thorough level (state save/restore, threading, parameter fuzzing)
+# =============================================================================
+
 name: Build
 
+# When to run: pushes to main or any dolio/* branch, pull requests, or the
+# "Run workflow" button on the Actions tab.
 on:
   push:
     branches: [main, "dolio/**"]
   pull_request:
   workflow_dispatch:
 
+# A new push to the same branch cancels the older, still-running build.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 env:
-  PLUGINVAL_VERSION: v1.0.4
-  ARTEFACTS: build/SliceAble_artefacts/Release
+  PLUGINVAL_VERSION: v1.0.4                   # pinned so results don't change unexpectedly
+  ARTEFACTS: build/SliceAble_artefacts/Release # where CMake puts the built plug-ins
 
 jobs:
   macos:
@@ -22,9 +42,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # Ninja builds faster than the Xcode generator.
       - name: Install Ninja
         run: brew install ninja
 
+      # Both architectures are requested explicitly (CMakeLists.txt also defaults to this on macOS).
       - name: Configure
         run: >
           cmake -S . -B build -G Ninja
@@ -38,6 +60,7 @@ jobs:
       - name: Unit tests
         run: ctest --test-dir build --output-on-failure
 
+      # Fails the build if any binary is missing either architecture.
       - name: Check binaries are universal (arm64 + x86_64)
         run: |
           set -euo pipefail
@@ -54,6 +77,9 @@ jobs:
             fi
           done
 
+      # Apple Silicon refuses to load unsigned code. "--sign -" is an ad-hoc
+      # signature: enough to run, but not notarised (users must clear the
+      # quarantine flag on downloads; see the README).
       - name: Ad-hoc code sign
         run: |
           set -euo pipefail
@@ -62,6 +88,8 @@ jobs:
             codesign --verify --deep --strict "$ARTEFACTS/$bundle"
           done
 
+      # Install the AU where macOS looks for it, make the system rescan
+      # (killall AudioComponentRegistrar), then validate it by its type/codes.
       - name: Validate AU (auval)
         run: |
           set -euo pipefail
@@ -80,6 +108,7 @@ jobs:
             --validate-in-process \
             --validate "$ARTEFACTS/VST3/Slice-able.vst3"
 
+      # Plug-ins on macOS are folders ("bundles"); zip each one so it downloads intact.
       - name: Package
         run: |
           set -euo pipefail
@@ -102,6 +131,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # No generator given: CMake picks the newest installed Visual Studio.
       - name: Configure
         run: cmake -S . -B build -A x64
 
@@ -111,6 +141,8 @@ jobs:
       - name: Unit tests
         run: ctest --test-dir build -C Release --output-on-failure
 
+      # pluginval.exe is a GUI-type program, so Start-Process -Wait is used to
+      # wait for it to finish and collect its exit code (0 = passed).
       - name: Validate VST3 (pluginval)
         shell: pwsh
         run: |
